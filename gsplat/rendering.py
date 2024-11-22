@@ -43,7 +43,7 @@ def rasterization(
     packed: bool = True,
     tile_size: int = 16,
     backgrounds: Optional[Tensor] = None,
-    render_mode: Literal["RGB", "D", "ED", "RGB+D", "RGB+ED"] = "RGB",
+    render_mode: Literal["RGB", "D", "ED", "MD", "RGB+D", "RGB+ED", "RGB+MD"] = "RGB",
     sparse_grad: bool = False,
     absgrad: bool = False,
     rasterize_mode: Literal["classic", "antialiased"] = "classic",
@@ -239,7 +239,7 @@ def rasterization(
     assert opacities.shape == (N,), opacities.shape
     assert viewmats.shape == (C, 4, 4), viewmats.shape
     assert Ks.shape == (C, 3, 3), Ks.shape
-    assert render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], render_mode
+    assert render_mode in ["RGB", "D", "ED", "MD", "RGB+D", "RGB+ED", "RGB+MD"], render_mode
 
     def reshape_view(C: int, world_view: torch.Tensor, N_world: list) -> torch.Tensor:
         view_list = list(
@@ -478,18 +478,19 @@ def rasterization(
             colors = reshape_view(C, colors, N_world)
 
     # Rasterize to pixels
-    if render_mode in ["RGB+D", "RGB+ED"]:
+    if render_mode in ["RGB+D", "RGB+ED", "RGB+MD"]:
         colors = torch.cat((colors, depths[..., None]), dim=-1)
         if backgrounds is not None:
             backgrounds = torch.cat(
                 [backgrounds, torch.zeros(C, 1, device=backgrounds.device)], dim=-1
             )
-    elif render_mode in ["D", "ED"]:
+    elif render_mode in ["D", "ED", "MD"]:
         colors = depths[..., None]
         if backgrounds is not None:
             backgrounds = torch.zeros(C, 1, device=backgrounds.device)
     else:  # RGB
         pass
+    render_last_channel_as_median_depth = "MD" in render_mode
 
     # Identify intersecting tiles
     tile_width = math.ceil(width / float(tile_size))
@@ -549,6 +550,7 @@ def rasterization(
                 backgrounds=backgrounds_chunk,
                 packed=packed,
                 absgrad=absgrad,
+                render_last_channel_as_median_depth=render_last_channel_as_median_depth
             )
             render_colors.append(render_colors_)
             render_alphas.append(render_alphas_)
@@ -568,6 +570,7 @@ def rasterization(
             backgrounds=backgrounds,
             packed=packed,
             absgrad=absgrad,
+            render_last_channel_as_median_depth=render_last_channel_as_median_depth
         )
     if render_mode in ["ED", "RGB+ED"]:
         # normalize the accumulated depth to get the expected depth

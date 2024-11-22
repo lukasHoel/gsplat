@@ -447,6 +447,7 @@ def rasterize_to_pixels(
     masks: Optional[Tensor] = None,  # [C, tile_height, tile_width]
     packed: bool = False,
     absgrad: bool = False,
+    render_last_channel_as_median_depth: bool = False,
 ) -> Tuple[Tensor, Tensor]:
     """Rasterizes Gaussians to pixels.
 
@@ -464,6 +465,7 @@ def rasterize_to_pixels(
         masks: Optional tile mask to skip rendering GS to masked tiles. [C, tile_height, tile_width]. Default: None.
         packed: If True, the input tensors are expected to be packed with shape [nnz, ...]. Default: False.
         absgrad: If True, the backward pass will compute a `.absgrad` attribute for `means2d`. Default: False.
+        render_last_channel_as_median_depth: If True, the last channel in colors is assumed to be the depth and we'll use it to render median depth in the last channel of rendered colors.
 
     Returns:
         A tuple:
@@ -561,6 +563,7 @@ def rasterize_to_pixels(
         isect_offsets.contiguous(),
         flatten_ids.contiguous(),
         absgrad,
+        render_last_channel_as_median_depth
     )
 
     if padded_channels > 0:
@@ -916,6 +919,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         isect_offsets: Tensor,  # [C, tile_height, tile_width]
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
+        render_last_channel_as_median_depth: bool,
     ) -> Tuple[Tensor, Tensor]:
         render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
             "rasterize_to_pixels_fwd"
@@ -931,6 +935,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             tile_size,
             isect_offsets,
             flatten_ids,
+            render_last_channel_as_median_depth
         )
 
         ctx.save_for_backward(
@@ -949,6 +954,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         ctx.height = height
         ctx.tile_size = tile_size
         ctx.absgrad = absgrad
+        ctx.render_last_channel_as_median_depth = render_last_channel_as_median_depth
 
         # double to float
         render_alphas = render_alphas.float()
@@ -976,6 +982,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         height = ctx.height
         tile_size = ctx.tile_size
         absgrad = ctx.absgrad
+        render_last_channel_as_median_depth = ctx.render_last_channel_as_median_depth
 
         (
             v_means2d_abs,
@@ -1000,6 +1007,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_render_colors.contiguous(),
             v_render_alphas.contiguous(),
             absgrad,
+            render_last_channel_as_median_depth,
         )
 
         if absgrad:
@@ -1018,6 +1026,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_colors,
             v_opacities,
             v_backgrounds,
+            None,
             None,
             None,
             None,

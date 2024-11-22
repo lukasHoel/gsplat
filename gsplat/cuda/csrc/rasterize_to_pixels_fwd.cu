@@ -26,6 +26,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const bool *__restrict__ masks,    // [C, tile_height, tile_width]
     const uint32_t image_width,
     const uint32_t image_height,
+    const bool render_last_channel_as_median_depth,
     const uint32_t tile_size,
     const uint32_t tile_width,
     const uint32_t tile_height,
@@ -109,6 +110,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     uint32_t tr = block.thread_rank();
 
     S pix_out[COLOR_DIM] = {0.f};
+    int32_t k_max = render_last_channel_as_median_depth ? COLOR_DIM - 1 : COLOR_DIM;
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
@@ -157,10 +159,15 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             const S vis = alpha * T;
             const S *c_ptr = colors + g * COLOR_DIM;
             GSPLAT_PRAGMA_UNROLL
-            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+            for (uint32_t k = 0; k < k_max; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
             }
             cur_idx = batch_start + t;
+
+            if(render_last_channel_as_median_depth && T > 0.5f && next_T < 0.5f) {
+                // save median depth as the position of the Gaussian center where transmittance goes below 0.5
+                pix_out[COLOR_DIM - 1] = c_ptr[COLOR_DIM - 1];
+            }
 
             T = next_T;
         }
@@ -199,7 +206,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
     const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids   // [n_isects]
+    const torch::Tensor &flatten_ids,   // [n_isects]
+    bool render_last_channel_as_median_depth
 ) {
     GSPLAT_DEVICE_GUARD(means2d);
     GSPLAT_CHECK_INPUT(means2d);
@@ -274,6 +282,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> call_kernel_with_dim(
             masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
             image_width,
             image_height,
+            render_last_channel_as_median_depth,
             tile_size,
             tile_width,
             tile_height,
@@ -302,7 +311,8 @@ rasterize_to_pixels_fwd_tensor(
     const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids   // [n_isects]
+    const torch::Tensor &flatten_ids,   // [n_isects]
+    bool render_last_channel_as_median_depth
 ) {
     GSPLAT_CHECK_INPUT(colors);
     uint32_t channels = colors.size(-1);
@@ -320,7 +330,8 @@ rasterize_to_pixels_fwd_tensor(
             image_height,                                                      \
             tile_size,                                                         \
             tile_offsets,                                                      \
-            flatten_ids                                                        \
+            flatten_ids,                                                       \
+            render_last_channel_as_median_depth                                \
         );
 
     // TODO: an optimization can be done by passing the actual number of

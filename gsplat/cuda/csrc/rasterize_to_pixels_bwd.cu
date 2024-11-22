@@ -28,6 +28,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     const bool *__restrict__ masks,    // [C, tile_height, tile_width]
     const uint32_t image_width,
     const uint32_t image_height,
+    const bool render_last_channel_as_median_depth,
     const uint32_t tile_size,
     const uint32_t tile_width,
     const uint32_t tile_height,
@@ -152,6 +153,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
         block.sync();
         // process gaussians in the current batch for this pixel
         // 0 index is the furthest back gaussian in the batch
+        int32_t k_max = render_last_channel_as_median_depth ? COLOR_DIM - 1 : COLOR_DIM;
         for (uint32_t t = max(0, batch_end - warp_bin_final); t < batch_size;
              ++t) {
             bool valid = inside;
@@ -196,8 +198,12 @@ __global__ void rasterize_to_pixels_bwd_kernel(
                 // update v_rgb for this gaussian
                 const S fac = alpha * T;
                 GSPLAT_PRAGMA_UNROLL
-                for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                for (uint32_t k = 0; k < k_max; ++k) {
                     v_rgb_local[k] = fac * v_render_c[k];
+                }
+                if(render_last_channel_as_median_depth && T > 0.5f && (T * (1.0f - alpha)) < 0.5f) {
+                    // gradient of median depth is 1 for the Gaussian along ray where T goes over 0.5 the first time, 0 everywhere else
+                    v_rgb_local[COLOR_DIM - 1] = v_render_c[COLOR_DIM - 1];
                 }
                 // contribution from this pixel
                 S v_alpha = 0.f;
@@ -305,7 +311,8 @@ call_kernel_with_dim(
     const torch::Tensor &v_render_colors, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas, // [C, image_height, image_width, 1]
     // options
-    bool absgrad
+    bool absgrad,
+    bool render_last_channel_as_median_depth
 ) {
 
     GSPLAT_DEVICE_GUARD(means2d);
@@ -382,6 +389,7 @@ call_kernel_with_dim(
                 masks.has_value() ? masks.value().data_ptr<bool>() : nullptr,
                 image_width,
                 image_height,
+                render_last_channel_as_median_depth,
                 tile_size,
                 tile_width,
                 tile_height,
@@ -435,7 +443,8 @@ rasterize_to_pixels_bwd_tensor(
     const torch::Tensor &v_render_colors, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas, // [C, image_height, image_width, 1]
     // options
-    bool absgrad
+    bool absgrad,
+    bool render_last_channel_as_median_depth
 ) {
 
     GSPLAT_CHECK_INPUT(colors);
@@ -459,7 +468,8 @@ rasterize_to_pixels_bwd_tensor(
             last_ids,                                                          \
             v_render_colors,                                                   \
             v_render_alphas,                                                   \
-            absgrad                                                            \
+            absgrad,                                                           \
+            render_last_channel_as_median_depth                                \
         );
 
     switch (COLOR_DIM) {
